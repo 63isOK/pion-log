@@ -37,7 +37,7 @@ go.mod 如下:
 - srtp
 - transport
 
-![依赖图](/resource/dep.png)
+![依赖图](./resource/dep.png)
 
 说明:
 
