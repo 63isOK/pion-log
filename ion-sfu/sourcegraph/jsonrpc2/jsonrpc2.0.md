@@ -895,3 +895,26 @@ bufferedObjectStream提供了对ObjectStream的实现,但是基于bufio的,
 这里的ws是指 gorilla/websocket.
 
 有了这个子包之后,所有的收发都是基于websocket的.
+
+## ion-sfu中的使用
+
+只使用到了构造Conn对象,以及监听断开连接的信道.
+
+    jc := jsonrpc2.NewConn(r.Context(), websocketjsonrpc2.NewObjectStream(c), p)
+    <-jc.DisconnectNotify()
+
+所以sourcegraph/jsonrpc2的扩展功能很多,但ion项目中只用到了ObjectStream和Handler,
+而ObjectStream用子包扩展到了websocket,还差Handler没理清楚:
+
+jsonrpc2.NewConn中第三个参数就是Handler,我们先分析何时会调用,最后分析Handler里面具体是什么.
+
+上面分析Conn时,说了:在构造Conn时,会创建一个读协程,
+在这个读协程里,有个for循环一直在从stream中读(从websocket中读),
+其中读到Request后,会调用Handler来处理:
+
+    c.h.Handle(ctx, c, m.request)
+
+此时,才会调用Handler接口的Handle(). Handler调用的时机找到了,来看看具体的处理逻辑:
+
+    s := sfu.NewSFU(conf)
+    p := server.NewJSONSignal(sfu.NewPeer(s))
