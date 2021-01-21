@@ -297,3 +297,6 @@ task才会结束,而且这个Pause也是阻塞的.
 
 在stop的最后,会监听stoppedChan信道,这是在等dispatch函数退出.
 stopSignal信号,是用于通知Pause退出.
+
+最后,等待队列是gamaazero/deque包,这个包在调用方并发使用时需要注意竞争,
+而workerpool这个包在使用deque时,只在一个协程中使用等待队列,这样就可以实现无锁了.
