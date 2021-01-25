@@ -586,5 +586,6 @@ Packet的Marshal是将Marshalto封装了一下:
 
 反序列化是先处理头,后处理payload.
 
-总结一下: 打包器会将一段[]byte的payload打包成Packet,
+总结一下: 打包器会将一段`[]byte`的payload打包成Packet,
 目前唯一未分析到的扩展是paylaod切片的逻辑,这个存在子包中.
+同时rtp解包器的逻辑也放在子包中.
