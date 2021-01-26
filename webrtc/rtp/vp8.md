@@ -177,3 +177,15 @@ vp8中的分包切片逻辑:
 整个vp8 rtp的解包,仅仅只是将vp8的payload提取出来.
 而h264的fu-a的解包,如果整个NALU包没有提取出来,则会缓存,直到整个NALU完整了再返回,
 而vp8的处理,简单了很多,可能跟没有各种NALU类型相关.
+
+vp8同样有是否是关键字的检查:
+
+    type VP8PartitionHeadChecker struct{}
+
+    func (*VP8PartitionHeadChecker) IsPartitionHead(packet []byte) bool {
+      p := &VP8Packet{}
+      if _, err := p.Unmarshal(packet); err != nil {
+        return false
+      }
+      return p.S == 1
+    }
