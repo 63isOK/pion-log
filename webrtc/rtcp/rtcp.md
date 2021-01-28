@@ -750,3 +750,226 @@ sdes类型的rtcp的反序列化也是类似的.
     }
 
 sdes的DestinationSSRC是获取chunk的数量.
+
+## Goodbye
+
+bye类型的rtcp包,用于表明某些源不再活跃.
+
+    /*
+     *        0                   1                   2                   3
+     *        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     *       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *       |V=2|P|    SC   |   PT=BYE=203  |             length            |
+     *       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *       |                           SSRC/CSRC                           |
+     *       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *       :                              ...                              :
+     *       +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+     * (opt) |     length    |               reason for leaving            ...
+     *       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     */
+
+不再活跃的源可以是多个ssrc或csrc,bye包中还可以包含可选的原因.
+最后离开的原因的处理和sdes中的chunk填充处理是一致的.
+
+    type Goodbye struct {
+      Sources []uint32
+      Reason string
+    }
+
+    func (g Goodbye) Marshal() ([]byte, error) {
+
+      // 计算整个bye包的长度
+      rawPacket := make([]byte, g.len())
+      packetBody := rawPacket[headerLength:]
+
+      if len(g.Sources) > countMax {
+        return nil, errTooManySources
+      }
+
+      // 拷贝ssrc
+      for i, s := range g.Sources {
+        binary.BigEndian.PutUint32(packetBody[i*ssrcLength:], s)
+      }
+
+      // 复制原因
+      if g.Reason != "" {
+        reason := []byte(g.Reason)
+
+        if len(reason) > sdesMaxOctetCount {
+          return nil, errReasonTooLong
+        }
+
+        reasonOffset := len(g.Sources) * ssrcLength
+        packetBody[reasonOffset] = uint8(len(reason))
+        copy(packetBody[reasonOffset+1:], reason)
+      }
+
+      // 设置公共头
+      hData, err := g.Header().Marshal()
+      if err != nil {
+        return nil, err
+      }
+      copy(rawPacket, hData)
+
+      return rawPacket, nil
+    }
+
+反序列化也是类似.
+
+## TransportLayerNack
+
+rtpfb中的tln,传输丢包.
+
+现在rtp传输层的nack反馈只有一种通用的nack.
+她的作用就是通知丢了一个或多个rtp包.
+
+一旦底层的传输协议提供了类似的"向发送端反馈信息"的机制,
+则不应该使用通用nack.
+
+rtcp中的反馈包包含3个层级的:
+
+- 传输层反馈
+- 负载层反馈
+- app层反馈
+
+反馈包的统一格式如下:
+
+    // 0                   1                   2                   3
+    // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |V=2|P|  FMT    |    PT         |           length              |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                     SSRC of packet sender                     |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                      SSRC of media source                     |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |              feedback control information(FCI)                |
+
+和通用的rtcp头相比,通用头的Count用于表示一些ssrc或chunk或报告包的数量,
+在反馈包中,FMT用于表示PT下的细类.
+对于tln,PT=205,FMT=15.
+
+ssrc of packet sender:发送此包的原始ssrc.
+ssrc of media source:这个nack包所关联的哪些ssrc,就是这些ssrc的rtp包丢了.
+FCI,4字节,决定了哪些信息.
+
+    // 0                   1                   2                   3
+    // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |        PID                  |       BLP                       |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+上面就是通用nack的fci.
+
+PID,2字节,是丢失的一个rtp包的序号.
+BLP,是后续丢的数据包的掩码位,是基于PID来计算的.
+
+可以看出,每次反馈某个rtp包及后面16个包的情况,如果之后第二个包丢失,就将第二位设置为1.
+注意:设置为0并不代表对应的rtp已经收到了,只表明在本次反馈中,没有将第x位标记为丢失.
+
+    type PacketBitmap uint16
+
+    type NackPair struct {
+      PacketID uint16
+      LostPackets PacketBitmap
+    }
+
+    type TransportLayerNack struct {
+      SenderSSRC uint32
+      MediaSSRC uint32
+      Nacks []NackPair
+    }
+
+对应tln的类型,一个tln是可以带多个fci的.
+rfc还规定了反馈消息的长度是n+2,n为nack数量(一个nack就是一个fci),
+在代码中的体现是n+2不能超过255,具体的依据还没找到,估计在rfc的哪个角落.
+
+    func (p TransportLayerNack) Marshal() ([]byte, error) {
+      if len(p.Nacks)+tlnLength > math.MaxUint8 {
+        return nil, errTooManyReports
+      }
+
+      rawPacket := make([]byte, nackOffset+(len(p.Nacks)*4))
+      binary.BigEndian.PutUint32(rawPacket, p.SenderSSRC)
+      binary.BigEndian.PutUint32(rawPacket[4:], p.MediaSSRC)
+      for i := 0; i < len(p.Nacks); i++ {
+        binary.BigEndian.PutUint16(rawPacket[nackOffset+(4*i):], p.Nacks[i].PacketID)
+        binary.BigEndian.PutUint16(rawPacket[nackOffset+(4*i)+2:], uint16(p.Nacks[i].LostPackets))
+      }
+      h := p.Header()
+      hData, err := h.Marshal()
+      if err != nil {
+        return nil, err
+      }
+
+      return append(hData, rawPacket...), nil
+    }
+
+tln的结构简单,所以序列化也简单.
+
+这里单独对NackPair提供了几个方法:
+
+    func (n *NackPair) Range(f func(seqno uint16) bool) {
+      more := f(n.PacketID)
+      if !more {
+        return
+      }
+
+      b := n.LostPackets
+      for i := uint16(0); b != 0; i++ {
+        if (b & (1 << i)) != 0 {
+          b &^= (1 << i)
+          more = f(n.PacketID + i + 1)
+          if !more {
+            return
+          }
+        }
+      }
+    }
+
+单独看这个方法,没什么头绪,要结合下面的方法一起看:
+
+    func (n *NackPair) PacketList() []uint16 {
+      out := make([]uint16, 0, 17)
+      n.Range(func(seqno uint16) bool {
+        out = append(out, seqno)
+        return true
+      })
+      return out
+    }
+
+用闭包来获取一个`[]uint16`,猜测是获取rtp序号.
+结合Range来看,是获取丢包序号,最长不超过17个.
+
+    func NackPairsFromSequenceNumbers(
+      sequenceNumbers []uint16) (pairs []NackPair) {
+
+      if len(sequenceNumbers) == 0 {
+        return []NackPair{}
+      }
+
+      // 第一个nack数据
+      nackPair := &NackPair{PacketID: sequenceNumbers[0]}
+      for i := 1; i < len(sequenceNumbers); i++ {
+        m := sequenceNumbers[i]
+
+        // 如果pid超过了当前nack的pid+16, 则新建一个nack包
+        if m-nackPair.PacketID > 16 {
+          pairs = append(pairs, *nackPair)
+          nackPair = &NackPair{PacketID: m}
+          continue
+        }
+
+        // 当前迭代的rtp序号可添加到nack中
+        nackPair.LostPackets |= 1 << (m - nackPair.PacketID - 1)
+      }
+
+      // 处理最后一个nack,添加到nack队列
+      pairs = append(pairs, *nackPair)
+      return
+    }
+
+看明白后,这个生成nack队列的功能函数非常精巧.简单就是美.
+
+这里提供的都是一些nack底层的操作,上层会依据这些信息和操作来组合更加复杂的逻辑.
