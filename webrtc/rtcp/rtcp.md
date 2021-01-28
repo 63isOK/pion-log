@@ -973,3 +973,360 @@ tln的结构简单,所以序列化也简单.
 看明白后,这个生成nack队列的功能函数非常精巧.简单就是美.
 
 这里提供的都是一些nack底层的操作,上层会依据这些信息和操作来组合更加复杂的逻辑.
+
+### RapidResynchronizationRequest
+
+快速同步请求反馈,也是rtp传输层的包.接收者会通知编码器:有一个或多个图片的数据丢失了.
+
+rfc上说到:媒体接收者无法同步某些媒体流时,发送一个rrr给媒体发送者,
+希望媒体发送者尽快发送一个sr包来.
+
+    type RapidResynchronizationRequest struct {
+      SenderSSRC uint32
+      MediaSSRC uint32
+    }
+
+rrr没有fci.
+
+    func (p RapidResynchronizationRequest) Marshal() ([]byte, error) {
+      rawPacket := make([]byte, p.len())
+      packetBody := rawPacket[headerLength:]
+
+      binary.BigEndian.PutUint32(packetBody, p.SenderSSRC)
+      binary.BigEndian.PutUint32(packetBody[rrrMediaOffset:], p.MediaSSRC)
+
+      hData, err := p.Header().Marshal()
+      if err != nil {
+        return nil, err
+      }
+      copy(rawPacket, hData)
+
+      return rawPacket, nil
+    }
+
+rrr的长度是4字节的公共头,8字节的反馈头.
+
+其他部分和其他类型rtcp的类似,就不赘述了.
+
+## TransportLayerCC
+
+tcc,也被称为twcc,和remb称为带宽自适应的两大算法.
+
+twcc的两大优势:
+
+- 基于rtp包,而不是媒体流,更加适合拥塞控制
+- 可以进行更早的丢包检测和恢复
+
+如果要使用twcc,第一需要扩展rtp头,第二需要在sdp中告知"启用了twcc",
+第三就是rtcp的支持.
+
+因为pion/rtp支持了tcc,但在pion的其他项目中没有使用到,所以暂不分析rtcp的tcc.
+
+## PictureLossIndication
+
+pli,负载层的反馈.
+
+    type PictureLossIndication struct {
+      SenderSSRC uint32
+      MediaSSRC uint32
+    }
+
+    func (p PictureLossIndication) Marshal() ([]byte, error) {
+      rawPacket := make([]byte, p.len())
+      packetBody := rawPacket[headerLength:]
+
+      binary.BigEndian.PutUint32(packetBody, p.SenderSSRC)
+      binary.BigEndian.PutUint32(packetBody[4:], p.MediaSSRC)
+
+      h := Header{
+        Count:  FormatPLI,
+        Type:   TypePayloadSpecificFeedback,
+        Length: pliLength,
+      }
+      hData, err := h.Marshal()
+      if err != nil {
+        return nil, err
+      }
+      copy(rawPacket, hData)
+
+      return rawPacket, nil
+    }
+
+这种通知型的反馈,是不需要带FCI的,就如RRR一样.
+pli,12字节,绝大部分逻辑都和rrr类似.
+
+## SliceLossIndication
+
+如果将一个图片分层多个小块,从左到右,从上到下,依次编号1-N,
+sli就是反馈丢了哪些块,pli比较暴力,直接是整个丢了.
+
+sli的fci如下:
+
+    // 0                   1                   2                   3
+    // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |        First          |       Number            |  PictureID  |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+说明:
+
+- First, 13位,第一个丢失的块
+- Number, 13位,总共丢了多少块
+- PictureID,图片的低6位id,和编码格式相关
+
+对应的类型如下:
+
+    type SLIEntry struct {
+      First uint16
+      Number uint16
+      Picture uint8
+    }
+
+    type SliceLossIndication struct {
+      SenderSSRC uint32
+      MediaSSRC uint32
+      SLI []SLIEntry
+    }
+
+在序列化和反序列化中,和其他类型的rtcp包类似,只是将常用的copy改为了append,
+小改动.
+
+## FullIntraRequest
+
+fir,也是请求关键帧的一种请求,和pli类似,但pli用于从错误中恢复,
+而fir的应用场景是新参与者进入,会发送fir,合流,也会用到fir,
+如果是从错误中恢复,不会使用fir,而是使用pli.
+
+    // 0                   1                   2                   3
+    // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |                     SSRC                                      |
+    // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    // |  seq nr.     |               reserved                         |
+
+seq nr.是命令序号,1字节,可有多个fci.
+
+    type FIREntry struct {
+      SSRC           uint32
+      SequenceNumber uint8
+    }
+
+    type FullIntraRequest struct {
+      SenderSSRC uint32
+      MediaSSRC  uint32
+      FIR []FIREntry
+    }
+
+序列化和反序列化就不贴了,逻辑和其他包类似.
+
+## ReceiverEstimatedMaximumBitrate
+
+拥塞控制算法.
+
+remb,和twcc一个是发送端的算法,一个是接收端的算法,两者的效果都是类似的.
+
+remb就是估计一个会话的总可用带宽.
+
+remb包,是向多个媒体发送方通知:我的总估计可用带宽.
+发送方发送的带宽不能超过估计的总带宽,而且需要对改变发送带宽有快速的响应.
+
+除了rtcp包,还需要在sdp中告知:启用了remb.
+
+    /*
+        0                   1                   2                   3
+        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |V=2|P| FMT=15  |   PT=206      |             length            |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |                  SSRC of packet sender                        |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |                  SSRC of media source                         |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |  Unique identifier 'R' 'E' 'M' 'B'                            |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |  Num SSRC     | BR Exp    |  BR Mantissa                      |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |   SSRC feedback                                               |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |  ...                                                          |
+    */
+
+下面是对应的类型:
+
+    type ReceiverEstimatedMaximumBitrate struct {
+      SenderSSRC uint32
+      Bitrate uint64
+      SSRCs []uint32
+    }
+
+    func (p ReceiverEstimatedMaximumBitrate) Marshal() (buf []byte, err error) {
+      // rebm的长度是20字节+4*ssrc数
+      buf = make([]byte, p.MarshalSize())
+
+      n, err := p.MarshalTo(buf)
+      if err != nil {
+        return nil, err
+      }
+
+      if n != len(buf) {
+        return nil, errWrongMarshalSize
+      }
+
+      return buf, nil
+    }
+
+具体的序列化放在MarshalTo上面:
+
+    func (p ReceiverEstimatedMaximumBitrate) MarshalTo(
+      buf []byte) (n int, err error) {
+
+      size := p.MarshalSize()
+      if len(buf) < size {
+        return 0, errPacketTooShort
+      }
+
+      buf[0] = 143 // v=2, p=0, fmt=15
+      buf[1] = 206
+
+      length := uint16((p.MarshalSize() / 4) - 1)
+      binary.BigEndian.PutUint16(buf[2:4], length)
+
+      binary.BigEndian.PutUint32(buf[4:8], p.SenderSSRC)
+      binary.BigEndian.PutUint32(buf[8:12], 0) // always zero
+
+      buf[12] = 'R'
+      buf[13] = 'E'
+      buf[14] = 'M'
+      buf[15] = 'B'
+
+      buf[16] = byte(len(p.SSRCs))
+
+      // math/bits.LeadingZeros64是获取前面为0的个数
+      // shift最终是比特率的位数
+      shift := uint(64 - bits.LeadingZeros64(p.Bitrate))
+
+      // 此处用到了指数和尾数的概念
+      // 103020 = 1.0302 * 10的5次方
+      // 那么1.0302就是尾数,5就是指数
+      var mantissa uint
+      var exp uint
+
+      // 以2为底,用24位来存储比特率
+      if shift <= 18 {
+        mantissa = uint(p.Bitrate)
+        exp = 0
+      } else {
+        mantissa = uint(p.Bitrate >> (shift - 18))
+        exp = shift - 18
+      }
+
+      buf[17] = byte((exp << 2) | (mantissa >> 16))
+      buf[18] = byte(mantissa >> 8)
+      buf[19] = byte(mantissa)
+
+      n = 20
+      for _, ssrc := range p.SSRCs {
+        binary.BigEndian.PutUint32(buf[n:n+4], ssrc)
+        n += 4
+      }
+
+      return n, nil
+    }
+
+整个序列化里还是用到了不少新东西的.
+
+最后在打印中,体现了不少好玩的单位.
+
+## 组合包 CompoundPacket
+
+rtcp包都非常小,所以很多都是聚合在一起发送,发送也有一些规则:
+
+- 组合包的第一个包一定要是报告包sr或rr
+  - 即使没有数据,也要发送一个空的rr包
+  - 即使只有一个bye包要组合,也要添加一个空的rr包
+- 每个组合包都应该包含一个含有cname条目的sdes包
+
+类型就是`[]Packet`
+
+    type CompoundPacket []Packet
+    var _ Packet = (*CompoundPacket)(nil) // assert is a Packet
+
+    func (c CompoundPacket) Marshal() ([]byte, error) {
+      if err := c.Validate(); err != nil {
+        return nil, err
+      }
+
+      p := []Packet(c)
+      return Marshal(p)
+    }
+
+组合包的检查我们最后再看,我们分析rtcp时,
+第一分析的对象是Packet和基于Packet数组的序列化和反序列化,正好在这里用上了.
+
+    func (c *CompoundPacket) Unmarshal(rawData []byte) error {
+      out := make(CompoundPacket, 0)
+      for len(rawData) != 0 {
+        p, processed, err := unmarshal(rawData)
+        if err != nil {
+          return err
+        }
+
+        out = append(out, p)
+        rawData = rawData[processed:]
+      }
+      *c = out
+
+      if err := c.Validate(); err != nil {
+        return err
+      }
+
+      return nil
+    }
+
+现在分析最后一个,rfc规定的组合包校验流程:
+
+    func (c CompoundPacket) Validate() error {
+      if len(c) == 0 {
+        return errEmptyCompound
+      }
+
+      // 组合包第一个包必须是报告包(sr/rr)
+      switch c[0].(type) {
+      case *SenderReport, *ReceiverReport:
+        // ok
+      default:
+        return errBadFirstPacket
+      }
+
+      // 必须包含一个sdes.cname包
+      // 而且sdes.cname前面只能有rr包(如果第一个是sr包的情况除外).
+      for _, pkt := range c[1:] {
+        switch p := pkt.(type) {
+        case *ReceiverReport:
+          continue
+
+        case *SourceDescription:
+          var hasCNAME bool
+          for _, c := range p.Chunks {
+            for _, it := range c.Items {
+              if it.Type == SDESCNAME {
+                hasCNAME = true
+              }
+            }
+          }
+
+          if !hasCNAME {
+            return errMissingCNAME
+          }
+
+          return nil
+
+        default:
+          return errPacketBeforeCNAME
+        }
+      }
+
+      return errMissingCNAME
+    }
+
+到此,pion/rtcp包分析完了,除了tcc没详细去分析,其他包都已经过了一遍.
