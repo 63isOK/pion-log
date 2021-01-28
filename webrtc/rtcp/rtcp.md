@@ -473,3 +473,77 @@ DestinationSSRC的目的是获取报告块中的ssrc.
     }
 
 打印也支持.
+
+## ReceptionReport
+
+报告块,这个是用于告诉推流者,本端收流的质量信息.
+
+这个报告是基于ssrc的.
+
+    type ReceptionReport struct {
+      SSRC uint32
+      FractionLost uint8
+      TotalLost uint32
+      LastSequenceNumber uint32
+      Jitter uint32
+      LastSenderReport uint32
+      Delay uint32
+    }
+
+按rfc3550 6.4.1说明,这个报告块的长度是24字节:
+
+- SSRC 4字节,指明是针对哪个源的接收报告
+- FractionLost, 1字节,从上次发送sr/rr包到现在,rtp丢包率,小数表示
+- TotalLost, 3字节,rtp包总的丢包数量
+- LastSequenceNumber, 4字节,低16位是接收的最大rtp序号,高16位存rtp序号重置次数
+- Jitter, 4字节,rtp包到达间隔时间的一个方差估计,也称抖动
+- LastSenderPeport, 4字节,从源收到的最新sr包中的ntp时间戳中的32位,如果没收到sr,则为0
+- Delay, 4字节,单位1/2的16次方秒,是从源收到sr包到发送此包的时间,如果源没有发sr,则为0
+
+这个报告块包含了很多信息,具体如何使用,就看上层业务如何调度,我们先看报告块的方法:
+
+    func (r ReceptionReport) Marshal() ([]byte, error) {
+      rawPacket := make([]byte, receptionReportLength)
+
+      binary.BigEndian.PutUint32(rawPacket, r.SSRC)
+
+      rawPacket[fractionLostOffset] = r.FractionLost
+
+      if r.TotalLost >= (1 << 25) {
+        return nil, errInvalidTotalLost
+      }
+
+      // 高字节保存在低地址,大端模式
+      tlBytes := rawPacket[totalLostOffset:]
+      tlBytes[0] = byte(r.TotalLost >> 16)
+      tlBytes[1] = byte(r.TotalLost >> 8)
+      tlBytes[2] = byte(r.TotalLost)
+
+      binary.BigEndian.PutUint32(rawPacket[lastSeqOffset:], r.LastSequenceNumber)
+      binary.BigEndian.PutUint32(rawPacket[jitterOffset:], r.Jitter)
+      binary.BigEndian.PutUint32(rawPacket[lastSROffset:], r.LastSenderReport)
+      binary.BigEndian.PutUint32(rawPacket[delayOffset:], r.Delay)
+
+      return rawPacket, nil
+    }
+
+    func (r *ReceptionReport) Unmarshal(rawPacket []byte) error {
+      if len(rawPacket) < receptionReportLength {
+        return errPacketTooShort
+      }
+
+      r.SSRC = binary.BigEndian.Uint32(rawPacket)
+      r.FractionLost = rawPacket[fractionLostOffset]
+
+      tlBytes := rawPacket[totalLostOffset:]
+      r.TotalLost = uint32(tlBytes[2]) | uint32(tlBytes[1])<<8 | uint32(tlBytes[0])<<16
+
+      r.LastSequenceNumber = binary.BigEndian.Uint32(rawPacket[lastSeqOffset:])
+      r.Jitter = binary.BigEndian.Uint32(rawPacket[jitterOffset:])
+      r.LastSenderReport = binary.BigEndian.Uint32(rawPacket[lastSROffset:])
+      r.Delay = binary.BigEndian.Uint32(rawPacket[delayOffset:])
+
+      return nil
+    }
+
+因为有rfc标准,所以报告块的序列化和反序列化都很简单,难的是如何在应用层去使用这些信息.
