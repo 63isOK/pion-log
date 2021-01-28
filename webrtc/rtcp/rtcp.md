@@ -547,3 +547,206 @@ DestinationSSRC的目的是获取报告块中的ssrc.
     }
 
 因为有rfc标准,所以报告块的序列化和反序列化都很简单,难的是如何在应用层去使用这些信息.
+
+## ReceiverReport
+
+作为流的接收者,发送给发流者的反馈信息.
+rr作为sr的一个简写部分,大部分数据和结构都是类似的.
+
+作为开源作者,从来不会在两个相同的地方使用同一个招式,而是各种秀.
+
+因为sr和rr的部分代码逻辑类似,下面只挑一些不同的来说.
+
+在序列化时,考虑到了最后的扩展有可能不满4字节的情况:
+
+    for (len(pe) & 0x3) != 0 {
+      pe = append(pe, 0)
+    }
+
+在反序列化时倒没考虑填充的问题,因为反序列化时无法考虑这种情况.
+
+## SourceDescription
+
+sdes类型的rtcp包,源描述包.
+
+下面是rtcp包组合中的几条约束:
+
+- 只要带宽允许,sr/rr应该经常发,每个发送周期,都必须报告报告包
+- 每个组合包,都应该包含sdes包,更具体一点,是应该包含sdes包中的cname
+  - 新接收者可以通过cname来识别ssrc,并进行流同步
+- rtcp组合包的长度是受限于mtu的,需要注意组合包数量
+
+sdes类型的rtcp包除了公共头,剩下的就是一个个chunk块,
+chunk块里包含ssrc/csrc信息和具体的sdes信息,所以也称为3层结构.
+公共头里的Count就指明了chunk块的数量.
+
+    /*
+     *         0                   1                   2                   3
+     *         0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     *        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     * header |V=2|P|    SC   |  PT=SDES=202  |             length            |
+     *        +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+     * chunk  |                          SSRC/CSRC_1                          |
+     *   1    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *        |                           SDES items                          |
+     *        |                              ...                              |
+     *        +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+     * chunk  |                          SSRC/CSRC_2                          |
+     *   2    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *        |                           SDES items                          |
+     *        |                              ...                              |
+     *        +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+     */
+
+ssrc/csrc每个都占4个字节,下面来说下sdes items:
+
+sdes items描述的条目有很多:
+
+- cname 规范名字
+- Nmae 用户名
+- Email 邮件
+- Phone 电话
+- Location 地址
+- Tool app或工具名
+- Note 提示
+- Private 隐私信息
+
+她们都有一个共同的开头:
+
+    /*
+     *   0                   1                   2                   3
+     *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     *  |    CNAME=1    |     length    | user and domain name        ...
+     *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     */
+
+再看看处理过程:
+
+    type SourceDescription struct {
+      Chunks []SourceDescriptionChunk
+    }
+
+SourceDescription实现了Packet接口,在序列化和反序列化时,
+针对chunk块,使用的是SourceDescriptionChunk.
+
+    type SourceDescriptionChunk struct {
+      Source uint32
+      Items  []SourceDescriptionItem
+    }
+
+在SourceDescriptionChunk的序列化和反序列化中,使用到了SourceDescriptionItem:
+
+    type SourceDescriptionItem struct {
+      Type SDESType
+      Text string
+    }
+
+在序列化时,chunk块设置长度时有特殊处理,这是rfc上规定的:
+
+    func (s SourceDescriptionChunk) len() int {
+      len := sdesSourceLen
+      for _, it := range s.Items {
+        len += it.len()
+      }
+
+      // 这步是让每个chunk块以0x00结尾
+      len += sdesTypeLen
+
+      // 下面这个是填充,以和4字节对齐
+      len += getPadding(len)
+
+      return len
+    }
+
+下面从头到位分析以下序列化的流程:
+
+    func (s SourceDescription) Marshal() ([]byte, error) {
+
+      // 计算rtcp包的总长度
+      rawPacket := make([]byte, s.len())
+      packetBody := rawPacket[headerLength:]
+
+      chunkOffset := 0
+      for _, c := range s.Chunks {
+        data, err := c.Marshal()
+        if err != nil {
+          return nil, err
+        }
+        copy(packetBody[chunkOffset:], data)
+        chunkOffset += len(data)
+      }
+
+      if len(s.Chunks) > countMax {
+        return nil, errTooManyChunks
+      }
+
+      hData, err := s.Header().Marshal()
+      if err != nil {
+        return nil, err
+      }
+      copy(rawPacket, hData)
+
+      return rawPacket, nil
+    }
+
+接下来看每个chunk块的序列化:
+
+    func (s SourceDescriptionChunk) Marshal() ([]byte, error) {
+
+      rawPacket := make([]byte, sdesSourceLen)
+      binary.BigEndian.PutUint32(rawPacket, s.Source)
+
+      for _, it := range s.Items {
+        data, err := it.Marshal()
+        if err != nil {
+          return nil, err
+        }
+        rawPacket = append(rawPacket, data...)
+      }
+
+      // 这儿就是具体在chunk后添加空字节0x00的逻辑
+      rawPacket = append(rawPacket, uint8(SDESEnd))
+      rawPacket = append(rawPacket, make([]byte, getPadding(len(rawPacket)))...)
+
+      return rawPacket, nil
+    }
+
+chunk里分ssrc/csrc和item,item的序列化如下:
+
+    func (s SourceDescriptionItem) Marshal() ([]byte, error) {
+      if s.Type == SDESEnd {
+        return nil, errSDESMissingType
+      }
+
+      rawPacket := make([]byte, sdesTypeLen+sdesOctetCountLen)
+
+      // item设置type
+      rawPacket[sdesTypeOffset] = uint8(s.Type)
+
+      txtBytes := []byte(s.Text)
+      octetCount := len(txtBytes)
+      if octetCount > sdesMaxOctetCount {
+        return nil, errSDESTextTooLong
+      }
+
+      // item设置length
+      rawPacket[sdesOctetCountOffset] = uint8(octetCount)
+
+      // item设置内容
+      rawPacket = append(rawPacket, txtBytes...)
+
+      return rawPacket, nil
+    }
+
+sdes类型的rtcp的反序列化也是类似的.
+
+    func (s *SourceDescription) DestinationSSRC() []uint32 {
+      out := make([]uint32, len(s.Chunks))
+      for i, v := range s.Chunks {
+        out[i] = v.Source
+      }
+      return out
+    }
+
+sdes的DestinationSSRC是获取chunk的数量.
