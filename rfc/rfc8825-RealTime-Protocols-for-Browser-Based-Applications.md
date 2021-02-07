@@ -314,4 +314,4 @@ aec/agc的控制api在media capture and streams api.
 
 最后附上本mome提到的相关协议:
 
-~[webrtc概览](/rfc/webrtc.png)
+![webrtc概览](/rfc/webrtc.png)
