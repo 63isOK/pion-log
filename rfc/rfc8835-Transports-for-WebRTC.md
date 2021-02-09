@@ -97,3 +97,27 @@ rfc5389的第11节定义了备用服务机制.
 webrtc endpoint 应该支持通过http代理来访问互联网,如果此特征不支持,
 那么就需要包含ALPN头,这个是在rfc7639中定义的.
 rfc7231定义了http1.1的语义和内容,rfc7235定义了http1.1的认证.
+
+### 传输协议的实现
+
+如果传输的是媒体,使用srtp.
+rfc8834定义了webrtc中的媒体传输和rtp的使用.
+rfc8083定义了断路器的要求.
+rfc8836定义了拥塞控制.
+
+rfc8827定义了使用dtls-srtp来做密钥交换.
+rfc8831定义的webrtc中的data channel,其中webrtc endpoint需要支持ice,
+ice上层要支持dtls,dtls上层要支持sctp.
+ice-dtls-sctp的封装在rfc8261中定义.
+rfc8841定义了dtls-sctp的sdp offer/answer协商.
+rfc8260定义了sctp对i-data的扩展.
+
+rfc5764定义了dtls中srtp的密钥生成.
+rfc8842定义了dtls/tls中sdp的协商.
+
+webrtc endpoint必须支持同一端口上的dtls/rtp复用,
+这是在rfc5764定义,在rfc7983中澄清.
+应用层的数据如果走dtls,都是sctp包格式.
+当然,如果是媒体的话,肯定是srtp的,底层协议也是dtls.
+rfc8833定义了webrtc中应用层协议的协商alpn
+
