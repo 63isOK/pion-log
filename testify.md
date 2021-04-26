@@ -17,7 +17,7 @@
 ## 初步分析
 
 这是一个集合库,通过doc.go来引入assert/http/mock库的初始化,
-现在分析的testify是v1.6.1版本的,http包已经弃用.那就分析断言和mock包.
+现在分析的testify是v1.6.1版本的,http包已经弃用.其中还有一个require包.
 
 ## stretchr/testify/assert包分析
 
@@ -27,18 +27,32 @@ assert包的目的:在Go test中提供了很多测试工具.
 标准Go test中会有一个判断,用以判断测试是否通过,
 assert就是可以简化这一步判断的写法.
 
-    func TestString(t *testing.T){
-      var a string = "abc"
-      var b string = "abc"
+```Golang
+func TestString(t *testing.T){
+  var a string = "abc"
+  var b string = "abc"
 
-      assert.Equal(t,a,b,"the two words should be the same")
-    }
+  assert.Equal(t,a,b,"the two words should be the same")
+}
+```
 
 这种写法可以简化很多,看doc.go的描述,还可以依据t创建一个断言对象,
 通过断言对象来做断言.这个写法就和标准库类似,后面会重点分析.
 
 断言包assert里面使用了go generate命令,是个非常厉害的工具,可以扩展很多写法,
 我么先来看看这部分内容.
+
+```bash
+# //go:generate sh -c "cd ../_codegen && go build && cd - && ../_codegen/_codegen -output-package=assert -template=assertion_format.go.tmpl"
+
+# 执行的命令如下:
+cd ../_codegen
+go build
+cd - 
+../_codegen/_codegen -output-package=assert -template=assertion_format.go.tmpl
+```
+
+整个意思是先生成codegen程序,之后执行程序,完成一些逻辑.
 
 ### codegen部分
 
@@ -105,3 +119,13 @@ assert就是可以简化这一步判断的写法.
       - // +build表示编译, // !build 表示忽略
       - 这个可以区分不同的平台,或针对集成测试等等
     - 第三个术语是binary-only,不过1.13之后就不支持了,就不多说了
+
+大致翻了一下codegen,里面大量使用了Go源码解析的包,也就是Go源码编译和AST相关的包,
+这块可以单独作为一个部分来分析.从assert包使用go generate来分析一下:
+
+- 有两个解析的模版文件tmpl,通过Go源码分析,重新生成了符合模版的代码
+- format模版,为assertions.go源码下的所有函数生成了一个新函数
+  - 新函数只添加了一个逻辑:如果实现了tHelper接口,就调用Helper函数
+- forward模版,将assertions.go源码下的所有函数提供了一个统一的访问入口Assertions类型
+
+总的来说,go generate下的codegen,是利用Go词法分析+替换的方式来减少人工作业.
