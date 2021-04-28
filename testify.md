@@ -191,3 +191,5 @@ func ObjectsAreEqualValues(expected, actual interface{}) bool {
 ```
 
 第二个帮助函数,除了比较对象,还比较不同类型的值,算是扩展了一下.
+
+CallerInfo(),当断言失败时,会返回一个特殊的栈帧,从失败到测试函数,栈帧的信息是文件名和行号.
