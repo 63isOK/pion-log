@@ -129,3 +129,6 @@ cd -
 - forward模版,将assertions.go源码下的所有函数提供了一个统一的访问入口Assertions类型
 
 总的来说,go generate下的codegen,是利用Go词法分析+替换的方式来减少人工作业.
+
+### assert包分析
+
