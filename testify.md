@@ -132,3 +132,62 @@ cd -
 
 ### assert包分析
 
+```Golang
+func ObjectsAreEqual(expected, actual interface{}) bool {
+	if expected == nil || actual == nil {
+		return expected == actual
+	}
+
+	exp, ok := expected.([]byte)
+	if !ok {
+		return reflect.DeepEqual(expected, actual)
+	}
+
+	act, ok := actual.([]byte)
+	if !ok {
+		return false
+	}
+	if exp == nil || act == nil {
+		return exp == nil && act == nil
+	}
+	return bytes.Equal(exp, act)
+}
+```
+
+这是帮助函数,其实可以等同于v1.16的reflect.DeepEqual(),
+bytes.Equqal()就是将[]byte转为string再做Go的==比较.
+猜测这种reflect.DeepEqual()之后再对[]byte做比较,是为了兼容老的Go版本.
+
+这个对象比较是通过反射包来比较,特点是类型不同,则不想等,其他规则如下:
+
+1. 不同类型的值是不相等的
+2. 数组,元素相等
+3. 结构体,字段相等(包括暴露和非暴露的)
+4. 函数,都为nil(其他情况则不相等)
+5. 接口,具体值相等
+6. map,条件1:都是nil或都不是nil,条件2:长度相同,key和value相等
+7. 指针,要么用Go的==判断相等;要么指向的值相等
+8. slice,都是nil或都不是nil;长度相同;底层数组是同一个或x和y的元素是相同的
+9. 数值/bool/字符串/通道,用Go的==判断相等
+
+```Golang
+func ObjectsAreEqualValues(expected, actual interface{}) bool {
+	if ObjectsAreEqual(expected, actual) {
+		return true
+	}
+
+	actualType := reflect.TypeOf(actual)
+	if actualType == nil {
+		return false
+	}
+	expectedValue := reflect.ValueOf(expected)
+	if expectedValue.IsValid() && expectedValue.Type().ConvertibleTo(actualType) {
+		// Attempt comparison after type conversion
+		return reflect.DeepEqual(expectedValue.Convert(actualType).Interface(), actual)
+	}
+
+	return false
+}
+```
+
+第二个帮助函数,除了比较对象,还比较不同类型的值,算是扩展了一下.
