@@ -7,6 +7,8 @@
 
 稍后还会从pion的核心贡献者的思路去看一下.
 
+[传送门](https://webrtc.org/getting-started/overview)
+
 ## webrtc api
 
 webrtc的api并举局限于spec中指定的那些,还包含H5的一些其他api.
@@ -18,3 +20,5 @@ webrtc的api并举局限于spec中指定的那些,还包含H5的一些其他api.
 - 屏幕, 通过`navigator.mediaDevices.getDisplayMedia()`捕获MediaStreams
 
 p2p连接, 由`RTCPeerConnection`接口处理,这个接口负责创建和控制两个peer之间的连接.
+
+## 设备
