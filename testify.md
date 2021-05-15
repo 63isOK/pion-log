@@ -193,3 +193,7 @@ func ObjectsAreEqualValues(expected, actual interface{}) bool {
 第二个帮助函数,除了比较对象,还比较不同类型的值,算是扩展了一下.
 
 CallerInfo(),当断言失败时,会返回一个特殊的栈帧,从失败到测试函数,栈帧的信息是文件名和行号.
+这个的实现原理是从runtime中获取堆栈信息,将断言失败到测试函数之间的信息取出来.
+这个函数仅仅作为辅助函数,FailNow就是在其上做了一次封装.
+
+FailNow(),除了打印失败信息,还打印了栈信息,最后还附加了一个failNow接口的处理.
