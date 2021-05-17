@@ -10,6 +10,7 @@
   <p>title 元素的内容会显示在浏览器的标题栏中。</p>
   <select id="availableCameras">
   </select>
+  <video id="localVideo" autoplay playsinline controls="false" />
 </body>
 
 <script>
@@ -39,15 +40,18 @@
   function updateCameraList(cameras) {
     const listElement = document.querySelector('select#availableCameras');
     listElement.innerHTML = '';
-    cameras.map(camera => {
-      const cameraOption = document.createElement('option');
-      cameraOption.label = camera.label;
-      cameraOption.value = camera.deviceId;
-    }).forEach(cameraOption => listElement.add(cameraOption));
+    cameras.then(function (devices) {
+      devices.forEach(function (device) {
+        const cameraOption = document.createElement('option');
+        cameraOption.label = devices.label;
+        cameraOption.value = devices.deviceId;
+        listElement.appendChild(cameraOption);
+      });
+    });
   }
 
-  const cameras = queryDevices('videoinput');
-  updateCameraList(cameras);
+  const currentList = queryDevices('videoinput');
+  updateCameraList(currentList);
 
   navigator.mediaDevices.addEventListener('devicechange', event => {
     const newList = queryDevices('videoinput');
@@ -64,10 +68,16 @@
 
     const stream = openDevices({
       'video': true,
-      'audio': true
+      'audio': true,
+      'echoCancellation': true
     });
 
     console.log('got MediaStream', stream);
+
+    const videoElement = document.querySelector('video#localVideo');
+    stream.then(function (streams) {
+      videoElement.srcObject = streams;
+    });
 
   } catch (error) {
 

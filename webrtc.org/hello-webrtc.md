@@ -46,3 +46,105 @@ ps: getUserMedia会触发异步请求,过程中会等待用户授权,整个过�
 用户不授权;找不到匹配的设备;匹配的设备被占用等.
 
 由于安全和隐私的问题,api中是拿不到设备的设备id和设备标签(设备名)的.
+
+js中用navigator.mediaDevices实现了设备接口,枚举是enumerateDevices()方法;
+打开是getUserMedia(),获取的媒体流可直接有H5的video播放,设备变化的事件是devicechange.
+
+其中getUserMeida的参数是约束,其实是实现了MediaStreamConstraints接口.
+这个约束是用于匹配最佳设备.约束可以很详细,也可以很宽松.也可以指定一个功能的使能,eg:aec.
+
+对于播放,实际情况中一般会指定video的3个属性: autoplay 表示自动播放;
+playsinline 在移动端表示小窗支持; controls="false" 表示不显示播放控件.
+
+以下是一个包含设备所有操作的例子:
+
+```html
+<html>
+
+<head>
+  <title>我的第一个 HTML 页面</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+</head>
+
+<body>
+  <p>body 元素的内容会显示在浏览器中。</p>
+  <p>title 元素的内容会显示在浏览器的标题栏中。</p>
+  <select id="availableCameras">
+  </select>
+  <video id="localVideo" autoplay playsinline controls="false" />
+</body>
+
+<script>
+
+  // query devices
+  async function queryDevices(type) {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter(device => device.kind === type)
+  }
+
+  console.log('cameras found:', queryDevices('videoinput'))
+  console.log('mic found:', queryDevices('audioinput'))
+
+  // NOTE: promise写法
+  // navigator.mediaDevices.enumerateDevices()
+  //   .then(function (devices) {
+  //     devices.forEach(function (device) {
+  //       console.log(device.kind + ":" + device.label + " id=" + device.deviceId);
+  //     });
+  //   })
+  //   .catch(function (err) {
+  //     console.log(err.name + ":" + err.message);
+  //   });
+
+  // device change event
+
+  function updateCameraList(cameras) {
+    const listElement = document.querySelector('select#availableCameras');
+    listElement.innerHTML = '';
+    cameras.then(function (devices) {
+      devices.forEach(function (device) {
+        const cameraOption = document.createElement('option');
+        cameraOption.label = devices.label;
+        cameraOption.value = devices.deviceId;
+        listElement.appendChild(cameraOption);
+      });
+    });
+  }
+
+  const currentList = queryDevices('videoinput');
+  updateCameraList(currentList);
+
+  navigator.mediaDevices.addEventListener('devicechange', event => {
+    const newList = queryDevices('videoinput');
+    updateCameraList(newList);
+  })
+
+  // open divices
+
+  const openDevices = async (constraints) => {
+    return await navigator.mediaDevices.getUserMedia(constraints);
+  }
+
+  try {
+
+    const stream = openDevices({
+      'video': true,
+      'audio': true,
+      'echoCancellation': true
+    });
+
+    console.log('got MediaStream', stream);
+
+    const videoElement = document.querySelector('video#localVideo');
+    stream.then(function (streams) {
+      videoElement.srcObject = streams;
+    });
+
+  } catch (error) {
+
+    console.error('error accessing media devices.', error);
+  }
+</script>
+
+</html>
+```
