@@ -44,3 +44,5 @@ p2p连接, 由`RTCPeerConnection`接口处理,这个接口负责创建和控制�
 其中navigator.mediaDevices就是设备对象,getUserMedia就是获取媒体流,其中的参数就是约束.
 ps: getUserMedia会触发异步请求,过程中会等待用户授权,整个过程中导致失败的情况非常多:
 用户不授权;找不到匹配的设备;匹配的设备被占用等.
+
+由于安全和隐私的问题,api中是拿不到设备的设备id和设备标签(设备名)的.
